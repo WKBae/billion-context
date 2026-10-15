@@ -574,7 +574,7 @@ class FleetInspectorComponent implements Component {
       const maxTop = Math.max(0, middle.length - midH);
       const top = clamp(this.follow ? maxTop : this.viewTop, 0, maxTop);
       middle = middle.slice(top, top + midH);
-      footer = this.theme.fg("dim", "↑↓/←→/pg scroll · g/G/Home/End jump to end · enter back · esc close");
+      footer = this.theme.fg("dim", "↑↓/←→/pg scroll · g/Home top · G/End bottom · enter back · esc close");
     }
     while (middle.length < midH) middle.push("");
     return frame([...header, ...middle, footer], width, this.theme);
