@@ -18,7 +18,9 @@ import { clearIncrementalProbe, INCREMENTAL_TURN_MARKER_HEADER, incrementalEnvel
 import type { DirectSendPrep } from "./native-intercept.js";
 import { asciiHeaderValue, detectProxyBase, destinationRoutedThroughProxy, fetchManifest, forwardTool, fetchStatus, fetchProxyVersion, postIdentityRegister, reportRuntimeInfoOnChange, armedIdleNotice, noSessionWarning, nonHttpProvidersFromEnv, type ForwardedToolResult, type ManifestTool } from "./shared.js";
 import { createForkAdopter } from "./fork-adopt.js";
+import { CHILD_ENV_CHANNEL, claudeBridgeChildEnvListener, isClaudeBridgeModel } from "./claude-bridge-routing.js";
 import { logHostEvent } from "./host-log.js";
+import { INLINE_ORIGIN } from "../inline-origin.js";
 import { plainHttpTrusted } from "../private-host.js";
 import { allowPrivateHttpProviders, guardrailBashTimeout, guardrailMaxOutputBytes, guardrailRepetition } from "../knobs.js";
 import { hostProfileFor } from "../host-profiles.js";
@@ -105,6 +107,9 @@ type ExtensionAPI = {
     // missing from it; optional because older hosts lack it.
     getActiveTools?: () => string[];
     setActiveTools?: (toolNames: string[]) => void;
+    // #3429: the inter-extension event bus pi-claude-bridge asks for each
+    // Claude Code child's environment; optional because non-pi hosts lack it.
+    events?: { on: (channel: string, handler: (data: unknown) => void) => unknown };
 };
 
 function agentName(override: string | undefined): string {
@@ -636,7 +641,7 @@ function noProxyWarning(agent: string): string {
 
 const RETRY_INTERVAL_MS = 10000;
 
-type RegisterState = { sid?: string; toolsFor?: string; toolsReady?: boolean; pending?: Promise<void>; retryAt?: number; identityAt?: string; carriedSids?: Set<string>; retryIntervalMs: number; manifestPrime?: { base: string; tools: Promise<ManifestTool[] | undefined> }; registeredTools?: ManifestTool[] };
+type RegisterState = { sid?: string; toolsFor?: string; toolsBase?: string; toolsReady?: boolean; pending?: Promise<void>; retryAt?: number; identityAt?: string; carriedSids?: Set<string>; retryIntervalMs: number; manifestPrime?: { base: string; tools: Promise<ManifestTool[] | undefined> }; registeredTools?: ManifestTool[] };
 
 // #2708: pi rebuilds its executable tool list per request — _refreshToolRegistry() walks
 // the live extension instances' tool maps into _toolRegistry, and setActiveToolsByName()
@@ -743,6 +748,9 @@ async function registerTools(pi: ExtensionAPI, ctx: Ctx, state: RegisterState, a
             if (state.toolsFor !== sid) {
                 for (const t of tools) pi.registerTool(manifestToTool(proxyBase, t, agent));
                 state.toolsFor = sid;
+                // #3429: the proxy those tools were registered against —
+                // the fallback origin for claude-bridge children.
+                state.toolsBase = proxyBase;
                 // #2708: remember what we put in the host registry so the
                 // per-request re-assert can detect a later drop.
                 state.registeredTools = tools;
@@ -792,6 +800,85 @@ async function registerTools(pi: ExtensionAPI, ctx: Ctx, state: RegisterState, a
     } finally {
         state.pending = undefined;
     }
+}
+
+// #3429: route pi-claude-bridge's Claude Code children into this pi
+// conversation's plugin session (see claude-bridge-routing.ts). The bridge
+// asks this session's event bus for each child's environment as it builds
+// the query, so the routing is a property of that one child: a provider
+// child of this session is routed once its tools are registered for the
+// session on a child-reachable proxy; summary and AskClaude children, other
+// sessions' children and children of requests without this session's id
+// keep the environment the bridge built. A tool result delivered to a parked
+// query continues that child with the environment it was spawned with.
+// Bridge models never reach before_provider_headers, so agent_start
+// registers the tools.
+function wireClaudeBridgeRouting(pi: ExtensionAPI, state: RegisterState, agent: string): void {
+    if (agent !== "pi") return;
+    const reported = new Set<string>();
+    const report = (key: string, level: "info" | "warn", message: string): void => {
+        if (reported.has(key)) return;
+        reported.add(key);
+        logHostEvent(level, "[native-client]", `bili-plugin(${agent}): ${message}`);
+    };
+    pi.on("agent_start", async (_event, ctx) => {
+        if (!isClaudeBridgeModel(ctx.model)) return;
+        try {
+            await registerTools(pi, ctx, state, agent);
+        } catch (err) {
+            logHostEvent("error", "[native-client]", `bili-plugin(${agent}): tool registration for claude-bridge routing failed (${err instanceof Error ? err.message : String(err)})`);
+        }
+    });
+    if (typeof pi.events?.on !== "function") return;
+    pi.events.on(CHILD_ENV_CHANNEL, claudeBridgeChildEnvListener({
+        agent,
+        // The registered tools' live base (#2416): a respawned proxy moves
+        // BILLION_CONTEXT_PROXY, and the next child follows it.
+        originFor: (sid) => (state.toolsReady === true && state.sid === sid ? (detectProxyBase(undefined) ?? state.toolsBase) : undefined),
+        onRouted: (sid, origin, outcome) => {
+            if (outcome === "routed") report(`routed:${sid}`, "info", `routing claude-bridge Claude Code children through ${origin} as conversation ${sid} (#3429)`);
+            else report("foreign-route", "warn", `ANTHROPIC_BASE_URL already routes through another bili proxy — claude-bridge children stay on it, so bili tools for this conversation cannot reach their session (#3429)`);
+        },
+    }));
+}
+
+// #3429: on the inline lane no proxy process exists for a Claude Code child
+// to reach, so warn once per instance when pi-claude-bridge is loaded. The
+// bridge can register its provider from its own session_start, after ours,
+// so later model_select and agent_start events repeat the check.
+export const INLINE_BRIDGE_WARNING = "bili: pi-claude-bridge is loaded while the bili inline lane is on. Conversations served by claude-bridge models bypass bili's ACP compression and tools (their Claude Code children cannot reach the in-process lane); pi and the bridge keep their native compaction. To use the HTTP proxy lane, which can route bridge children, set BILI_PI_INLINE=0 and restart pi. (#3429)";
+
+function claudeBridgeLoaded(ctx: Ctx, selected: unknown): boolean {
+    try {
+        if (typeof selected === "object" && selected !== null && isClaudeBridgeModel(selected)) return true;
+        if (isClaudeBridgeModel(ctx.model)) return true;
+    } catch {
+        // stale ctx or odd model shape — fall through to the catalog
+    }
+    try {
+        const all = ctx.modelRegistry?.getAll?.();
+        return Array.isArray(all) && all.some((m) => typeof m === "object" && m !== null && isClaudeBridgeModel(m));
+    } catch {
+        return false;
+    }
+}
+
+function wireInlineBridgeWarning(pi: ExtensionAPI, agent: string): void {
+    if (agent !== "pi") return;
+    let warned = false;
+    const check = (ctx: Ctx, selected?: unknown): void => {
+        if (warned || detectProxyBase(undefined) !== INLINE_ORIGIN || !claudeBridgeLoaded(ctx, selected)) return;
+        warned = true;
+        logHostEvent("warn", "[native-client]", `bili-plugin(${agent}): ${INLINE_BRIDGE_WARNING}`);
+        try {
+            ctx.ui?.notify?.(INLINE_BRIDGE_WARNING, "warning");
+        } catch {
+            // optional host UI — the log line above stands
+        }
+    };
+    pi.on("session_start", (_event, ctx) => check(ctx));
+    pi.on("model_select", (event, ctx) => check(ctx, (event as { model?: unknown } | undefined)?.model));
+    pi.on("agent_start", (_event, ctx) => check(ctx));
 }
 
 // #3304: pi's payload swap happens INSIDE the runner (before_provider_request
@@ -861,6 +948,8 @@ export function createBiliPlugin(agentOverride?: string, opts?: { retryIntervalM
     return function biliPlugin(pi: ExtensionAPI): void {
         const agent = agentName(agentOverride);
         const state: RegisterState = { retryIntervalMs: opts?.retryIntervalMs ?? RETRY_INTERVAL_MS };
+        wireClaudeBridgeRouting(pi, state, agent);
+        wireInlineBridgeWarning(pi, agent);
         // #3066/#3516: tool-output guardrails (output cap / bash timeout /
         // repetition loop-break); knobs resolve env > file > default so the
         // documented BILI_GUARDRAIL_* / guardrails.* switches work end-to-end.
@@ -940,7 +1029,14 @@ export function createBiliPlugin(agentOverride?: string, opts?: { retryIntervalM
         // proxy never carried the conversation. Cancelling there killed ALL
         // compaction — the bridge disables Claude Code's own auto-compact and
         // takes over Pi's in its own session_before_compact handler, which
-        // never runs once an earlier handler returned cancel. Accepted
+        // never runs once an earlier handler returned cancel. #3429 routes
+        // the bridge's provider children (wireClaudeBridgeRouting), so the
+        // proxy can carry a bridge conversation — but only the children
+        // spawned after routing applied, never its summary children, and a
+        // parked child keeps the route it was spawned with. Carriage evidence
+        // (carriedSids, a status probe) describes history, not the child
+        // that will serve the next turn, so a claude-bridge model always keeps
+        // native compaction, BILI_NON_HTTP_PROVIDERS opt-in or not. Accepted
         // evidence, in order: (1) local — we stamped
         // x-bili-plugin-conversation for this session id (tools registered
         // AND a request routed through the proxy), or omp's identity register
@@ -959,10 +1055,12 @@ export function createBiliPlugin(agentOverride?: string, opts?: { retryIntervalM
         const ownsCompaction = async (ctx: Ctx | undefined, branchEntries?: unknown): Promise<boolean> => {
             const proxyBase = proxyBaseForCtx(ctx, branchEntries);
             if (proxyBase === undefined) return false;
+            // #3429: see above — pi/bridge compaction owns claude-bridge sessions.
+            if (isClaudeBridgeModel(ctx?.model)) return false;
             const baseUrl = ctx?.model?.baseUrl;
             if (typeof baseUrl === "string" && baseUrl.length > 0 && !/^https?:\/\//i.test(baseUrl)) {
-                // #1392: an opaque-scheme baseUrl (e.g. pi-claude-bridge's "claude-bridge")
-                // vetoes compaction ownership UNLESS its provider is explicitly opted in via
+                // #1392: an opaque-scheme baseUrl (e.g. a provider whose baseUrl is a bare
+                // name; claude-bridge models already returned above) vetoes compaction ownership UNLESS its provider is explicitly opted in via
                 // BILI_NON_HTTP_PROVIDERS. Opt-in only widens the candidate set — the carriage
                 // evidence below (carriedSids / status probe) still decides, so unrouted traffic
                 // never cancels and #1382 cannot recur for a newly-opted-in provider class.

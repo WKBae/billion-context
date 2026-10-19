@@ -475,12 +475,12 @@
 - **类型：** `boolean`
 - **默认值：** `false`
 - **状态：** ACTIVE
-- **说明：** `#1392` —— 为**非 http(s) baseUrl 的 provider**（如 pi-claude-bridge 的字面量 `"claude-bridge"`）放行 bili 的压缩接管考量。条目的键 = provider id —— 非 URL 键本身对路由惰性无效（给它 [`bind`](#named-provider-entries-bind) 即成为真实 lane），用于启动器导出的 `BILI_NON_HTTP_PROVIDERS` 白名单，供 pi/omp 插件在原本要一票否决非 http baseUrl 的地方（#1383）查询。放行只是扩大候选集：仍需正证据（插件已盖章会话、或 `/__bili/plugin/status` 确认代理承载）才会取消原生压缩。环境变量等价： `BILI_NON_HTTP_PROVIDERS=a,b`（与文件并集去重）。仅在 `bili pi` / `bili omp` 启动器或直接安装插件时才有意义。
+- **说明：** `#1392` —— 为**非 http(s) baseUrl 的 provider**（如 baseUrl 是裸名称 `"my-opaque-provider"` 的扩展提供模型）放行 bili 的压缩接管考量。条目的键 = provider id —— 非 URL 键本身对路由惰性无效（给它 [`bind`](#named-provider-entries-bind) 即成为真实 lane），用于启动器导出的 `BILI_NON_HTTP_PROVIDERS` 白名单，供 pi/omp 插件在原本要一票否决非 http baseUrl 的地方（#1383）查询。放行只是扩大候选集：仍需正证据（插件已盖章会话、或 `/__bili/plugin/status` 确认代理承载）才会取消原生压缩。环境变量等价： `BILI_NON_HTTP_PROVIDERS=a,b`（与文件并集去重）。仅在 `bili pi` / `bili omp` 启动器或直接安装插件时才有意义。**例外 —— pi-claude-bridge：** claude-bridge 模型（`api` 或 `baseUrl` 为 `"claude-bridge"`）无论是否放行都始终保留原生压缩（#3429）：bili 只路由 bridge 的 provider 子进程，从不路由其 summary 子进程，且挂起的子进程保持其启动时的路由，因此承载证据无法担保服务下一轮的子进程。`"claude-bridge"` 条目上的 `compactionOptIn` 不起作用。
 
   ```jsonc
   {
     "providers": {
-      "claude-bridge": { "compactionOptIn": true }
+      "my-opaque-provider": { "compactionOptIn": true }
     }
   }
   ```
@@ -1067,7 +1067,6 @@
   "providers": {
     "claude-bridge": {
       "bind": "https://api.anthropic.com",
-      "compactionOptIn": true,
       "compress": { "maxContextLimitPct": 0.75 }
     }
   }
@@ -2176,7 +2175,7 @@ Claude Code 的 undici fetch 忽略 `HTTPS_PROXY`，所以证书 MITM 拦不到�
 
 启动器优先零文件注入（env > CLI 参数/扩展 API > 生成文件；见 [TECHNICAL-NOTES.zh-CN.md —— 注入优先级](TECHNICAL-NOTES.zh-CN.md)）。确实绕不开文件时写的都是**副本** —— 真实配置绝不编辑：
 
-- **pi / omp** —— 不写任何文件（#535）：provider baseUrl 走 `BILI_PROVIDER_REWRITES` env 清单，由 bili 扩展加载时消费（`registerProvider`）；自动原生压缩改由扩展内取消（`session_before_compact`，omp 按 `auto_compaction_start` 预告区分自动/手动，#851）——但仅在代理确实承载该会话有正证据时才取消（插件已为该会话 id 盖章 `x-bili-plugin-conversation`、omp 身份注册成功、或 `/__bili/plugin/status?conversationId=` 确认）；非 http(s) 的 provider baseUrl（如 pi-claude-bridge 的字面量 `"claude-bridge"`）默认永不取消，其自带的压缩接管继续生效（#1382）；可通过 `providers` 表里该 provider 的条目显式放行 —— 键 = provider id（非 URL 键对路由惰性无效），字段 `"compactionOptIn": true` —— 或 `BILI_NON_HTTP_PROVIDERS`（env，逗号分隔）—— 但放行只是扩大候选集，被放行的 provider 仍需上述同样的正证据才会被取消（#1392）——手动 `/compact` 无论如何都保持用户所有。真实 `~/.pi` / `~/.omp` 主目录原样不动。
+- **pi / omp** —— 不写任何文件（#535）：provider baseUrl 走 `BILI_PROVIDER_REWRITES` env 清单，由 bili 扩展加载时消费（`registerProvider`）；自动原生压缩改由扩展内取消（`session_before_compact`，omp 按 `auto_compaction_start` 预告区分自动/手动，#851）——但仅在代理确实承载该会话有正证据时才取消（插件已为该会话 id 盖章 `x-bili-plugin-conversation`、omp 身份注册成功、或 `/__bili/plugin/status?conversationId=` 确认）；非 http(s) 的 provider baseUrl（如 pi-claude-bridge 的字面量 `"claude-bridge"`）默认永不取消，其自带的压缩接管继续生效（#1382）；可通过 `providers` 表里该 provider 的条目显式放行 —— 键 = provider id（非 URL 键对路由惰性无效），字段 `"compactionOptIn": true` —— 或 `BILI_NON_HTTP_PROVIDERS`（env，逗号分隔）—— 但放行只是扩大候选集，被放行的 provider 仍需上述同样的正证据才会被取消（#1392），而 claude-bridge 模型无论是否放行都永不取消（#3429）——手动 `/compact` 无论如何都保持用户所有。真实 `~/.pi` / `~/.omp` 主目录原样不动。
 - **opencode** —— 临时 `opencode.json`（由 `OPENCODE_CONFIG` 指向，客户端退出时删除），明文 `baseURL` 重写为 `/bili/` 形式，**并追加了薄插件**（`/acp` + `/acp-cache` 命令）。OpenCode 1.x 下 `opencode-acp` 条目会从副本中移除（主机不得以激活状态加载它），改由薄插件把同一个包作为库导入、仅对 legacy 会话生效；首个被移除的 spec 经 `BILI_OPENCODE_ACP_SPEC` 传递，保证 bridge 导入的正是主机本会加载的那份拷贝（#920）。
 - **hermes** —— 不写任何文件（#535）：其 httpx 栈走 `HTTPS_PROXY`（+ `SSL_CERT_FILE` → `combined-ca.pem`；旧版 `HERMES_CA_BUNDLE` 保留设置，#1375）—— https 经 CONNECT 证书 MITM，明文 http 经 absolute-form 正向代理请求。若没配置任何 provider，启动器打印警告，hermes 将**不经代理**运行（无压缩）。
 - **dsh** —— 按目的地分流（#535）：dsh 的 fetch 栈尊重代理 env，但对回环目标无条件绕过，所以**非回环**上游走 `HTTPS_PROXY`（证书 MITM）/ `HTTP_PROXY`（absolute-form 正向代理请求），`SSL_CERT_FILE` → `combined-ca.pem`；仅**回环**上游保留持久 overlay `DSH_HOME`（`~/.dsh-bili`），重写后的 `settings.yaml` 让它们走 `/bili/`。`profiles/`、凭据、会话符号链接共享；真实 `~/.dsh` 绝不触碰。home 顶层的 SQLite 数据库是唯一不共享的例外：每次启动在 overlay 内私有拷贝，退出时作为整体合并回去（文件链接的主库会让两条路径在同一 inode 上长出互不协调的 WAL —— #1917）。内置 `deepseek-official` 路由另行经 `$DEEPSEEK_BASE_URL` 接管（dsh 解析顺序为 settings `llm-deepseek.baseURL` ?? 环境变量 ?? 默认值，用户配置优先，环境变量作零配置兜底）—— 即便没有任何自定义 provider，内置 deepseek 路由也照样走代理。

@@ -166,6 +166,7 @@ Pi 有完整原生模式(`bili plugin install pi`,README 快速上手方案 1);�
 | 全部 HTTP provider | ✅ 覆盖 —— 具名 plugin-mode 会话 |
 | `openai-codex-responses`(ChatGPT backend-api),`transport: "sse"` | ✅ 覆盖 —— 与任何 HTTP provider 无异 |
 | `openai-codex-responses`,`transport: "auto"`(默认)/ `"websocket"` / `"websocket-cached"` | ✅ 覆盖(#2111)—— 构造器 URL 被重写为 `<proxy-ws>/bili/<https-upstream>`(例:`wss://chatgpt.com/backend-api/codex/responses` → `ws://127.0.0.1:<port>/bili/https://chatgpt.com/backend-api/codex/responses`)。构造器参数、子协议、请求头全部保留,pi 在 SSE 上发的同一个 `session-id` 随升级握手到达,会话标识跨传输字节一致;子代理各用自己的会话 ID。`previous_response_id` 增量续传在该车道可用(代理先展开 delta 再进管线,回上游前再优化回 delta) |
+| `claude-bridge`([pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge)) | ✅ 覆盖(#3429)—— Claude Code 子进程,经其环境变量路由(见下文) |
 | AWS Bedrock(`bedrock-converse-stream`) | ❌ Bedrock 流量全部走 WS、无 transport 选项、升级握手不带自定义头 —— 仅靠 URL 拦截无法覆盖,需要代理侧专门的 WS codec(不在 #2111 范围,归入 #2073 另行跟踪) |
 
 拦截带来一个拓扑后果:pi 的客户端握手现在指向本地代理(总是成功),因此*上游*拒绝 WS 握手会以流中传输失败的形式暴露,而不再触发 pi 的同轮 SSE 回退——该回退只在客户端握手失败时触发。下面的显式 `sse` 车道仍是确定性绕行手段。
@@ -179,6 +180,12 @@ Pi 有完整原生模式(`bili plugin install pi`,README 快速上手方案 1);�
 默认值 `"auto"` 先试 WS、握手失败才回退 SSE;旧布尔键 `"websockets": false` 会自动迁移。该键全局生效,但只有支持多传输的 provider(目前是 codex provider)消费它,纯 HTTP provider 不受影响。Windows + Pi 1.0.2 实机验证(#2063 owner 复现):显式 `sse` 携带正确会话 ID 进入 bili。
 
 该车道已经过端到端实证(`tests/e2e/e2e-pi-codex-ws.test.ts`,真实 pi 对确定性 mock 上游经真实代理):显式 websocket 与 auto 路由、升级握手上 stamp 与 `session-id` == 会话 ID 一致、compress/decompress 往返并反映到后续请求、`previous_response_id` 展开、上游拒绝行为、显式 sse 回归守卫,以及两个并发子代理式会话共享一个代理互不串扰。
+
+**pi-claude-bridge(#3429)。** bridge 由 Claude Code 子进程提供模型,子进程自己直连 Anthropic,fetch 拦截和 `before_provider_headers` 都看不到它们。bridge 在派生子进程前,会在该子进程所服务的 pi 会话的事件总线上请求该子进程的环境(事件 `claude-bridge:child-env`,见 bridge README)。对于主对话的子进程,只要该会话的 bili 工具已注册在子进程可达的代理上,扩展就返回 bridge 环境的副本:`ANTHROPIC_BASE_URL` 设为 `<proxy>/bili/<upstream>`(若你已在该变量里配置了中转,则包裹该中转),并在 `ANTHROPIC_CUSTOM_HEADERS` 中加入 `x-bili-plugin`、`x-bili-plugin-conversation`、`x-bili-plugin-context-window` 与 `x-bili-plugin-model`。该子进程的请求于是以稳定的 pi 会话 ID 并入该 pi 会话的插件模式会话:bili 工具可用,重新打开或恢复会话后折叠状态依然保留。
+
+路由只属于那一个子进程:扩展从不写入 `process.env`,因此 shell 命令、同进程内的其他会话、进程内子代理、bridge 的摘要子进程与 AskClaude 子进程,以及为不带该会话 ID 的请求派生的子进程(例如其他扩展直接发起的 bridge 调用)都保持 bridge 构建的环境。由挂起的 Claude Code 查询接收的工具结果会延续先前派生的子进程,沿用其派生时的环境;回合中途才具备的路由从下一个子进程开始生效。若你的 `ANTHROPIC_BASE_URL` 已经经由另一个 bili 代理路由,扩展不做改动并记录警告。inline 车道不适用:那里没有子进程可达的代理进程。inline 车道开启且已加载 pi-claude-bridge 时,扩展会警告一次(写入日志并弹出警告提示):在该车道上 bridge 对话绕过 bili 的压缩与工具,压缩仍由 pi 与 bridge 原生负责。如需改用 HTTP 代理车道,设置 `BILI_PI_INLINE=0` 并重启 pi。不发出该事件的 bridge 版本(0.9.3 及更早)其子进程保持不路由。
+
+由于摘要子进程绕过路由,而挂起的查询沿用其派生时的路由,代理对 bridge 会话的视图可能落后于下一回合,因此即使 `BILI_NON_HTTP_PROVIDERS` 选择加入该 provider,claude-bridge 会话的压缩仍由 pi 与 bridge 负责。
 
 ### 子代理(pi-subagents)— native 安装覆盖(#2185)
 

@@ -165,6 +165,13 @@ test("unit: countBiliToolUses counts mcp-prefixed and bare ACP tool names", () =
     assert.equal(countBiliToolUses([]), 0);
 });
 
+test("unit: pi-claude-bridge's custom-tools server counts only its bare ACP names as bili tools (#3429)", () => {
+    const msgs = mkCoreMessages(["mcp__custom-tools__compress", "mcp__custom-tools__acp_status", "mcp__custom-tools__bash", "mcp__custom-tools__compressor", "mcp__custom-toolz__compress", "custom-tools__compress"]);
+    assert.equal(countBiliToolUses(msgs), 2);
+    assert.equal(biliToolsDeclaredOnWire({ tools: [{ name: "mcp__custom-tools__compress" }] }, "anthropic"), true);
+    assert.equal(biliToolsDeclaredOnWire({ tools: [{ name: "mcp__custom-tools__read" }] }, "anthropic"), false);
+});
+
 test("unit: biliToolsDeclaredOnWire sees every protocol's tool shape", () => {
     assert.equal(biliToolsDeclaredOnWire({ tools: [{ name: "mcp__bili__compress" }] }, "anthropic"), true);
     assert.equal(biliToolsDeclaredOnWire({ tools: [{ name: "web_search" }] }, "anthropic"), false);

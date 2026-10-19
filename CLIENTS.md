@@ -685,6 +685,7 @@ plugin-mode session.
 | All HTTP providers | ✅ covered — named plugin-mode session |
 | `openai-codex-responses` (ChatGPT backend-api), `transport: "sse"` | ✅ covered — identical to any HTTP provider |
 | `openai-codex-responses`, `transport: "auto"` (default) or `"websocket"` / `"websocket-cached"` | ✅ covered (#2111) — the constructor URL is rewritten to `<proxy-ws>/bili/<https-upstream>` (e.g. `wss://chatgpt.com/backend-api/codex/responses` → `ws://127.0.0.1:<port>/bili/https://chatgpt.com/backend-api/codex/responses`). Constructor args, subprotocols and request headers are preserved, so the same `session-id` pi sends on SSE rides the upgrade and the session identity is byte-identical across transports; subagents keep their own ids. `previous_response_id` incremental continuation works over the lane (the proxy expands deltas before the pipeline and re-optimizes them back upstream) |
+| `claude-bridge` ([pi-claude-bridge](https://github.com/elidickinson/pi-claude-bridge)) | ✅ covered (#3429) — Claude Code child processes, routed through their environment (see below) |
 | AWS Bedrock (`bedrock-converse-stream`) | ❌ all Bedrock traffic is WebSocket, with no transport option and no custom headers on the upgrade — not coverable by URL interception alone; it needs a dedicated proxy-side WS codec (out of #2111's scope, tracked separately under #2073) |
 
 One topology consequence of the intercept: pi's client-side handshake now targets the local proxy (which always succeeds), so an *upstream* WS refusal surfaces as a mid-stream transport failure instead of triggering pi's same-turn SSE fallback — that fallback only fires on a client-side handshake failure. The explicit `sse` lane below remains the deterministic escape hatch.
@@ -704,6 +705,43 @@ Windows + Pi 1.0.2 (#2063 owner repro): explicit `sse` enters bili with the
 correct session id.
 
 The lane is verified end-to-end (`tests/e2e/e2e-pi-codex-ws.test.ts`, real pi against a deterministic mock upstream through the real proxy): explicit-websocket and auto routing, upgrade-header stamps with `session-id` == conversation id, compress/decompress round trips reflected in subsequent requests, `previous_response_id` expansion, upstream-refusal behavior, the explicit-sse regression guard, and two concurrent subagent-style sessions sharing one proxy without cross-talk.
+
+**pi-claude-bridge (#3429).** The bridge serves its models from Claude Code
+child processes that call Anthropic themselves, so neither the fetch intercept
+nor `before_provider_headers` sees them. Before it spawns a child, the bridge
+asks the event bus of the pi session that child serves for the child's
+environment (event `claude-bridge:child-env`, documented in the bridge
+README). For a main-conversation child of a session whose bili tools are
+registered on a proxy a child process can reach, the extension returns a copy
+of the bridge's environment with `ANTHROPIC_BASE_URL` set to
+`<proxy>/bili/<upstream>` (wrapping a relay you already configured there) and
+`x-bili-plugin`, `x-bili-plugin-conversation`, `x-bili-plugin-context-window`
+and `x-bili-plugin-model` added to `ANTHROPIC_CUSTOM_HEADERS`. That child's
+requests join the pi conversation's plugin session under the stable pi
+session id, so the bili tools work and fold state survives reopening or
+resuming the session.
+
+The routing belongs to that one child: the extension never writes
+`process.env`, so shell commands, other sessions in the same process,
+in-process subagents, the bridge's summary and AskClaude children, and any
+child spawned for a request without the session's id (for example a direct
+bridge call from another extension) keep the environment the bridge built. A tool result
+answered by a parked Claude Code query continues the child that was spawned
+earlier, with the environment it was spawned with; routing that becomes
+available mid-turn applies from the next child. If your `ANTHROPIC_BASE_URL`
+already routes through a different bili proxy, the extension leaves it alone
+and logs a warning. The inline lane is excluded: it has no proxy process a
+child could reach. When the inline lane is on and pi-claude-bridge is loaded,
+the extension warns once, in the log and as a warning toast:
+bridge conversations bypass bili's compression and tools there, and pi and the
+bridge keep their native compaction. Set `BILI_PI_INLINE=0` and restart pi to
+use the HTTP proxy lane instead. Bridge versions that do not emit the event (0.9.3 and
+earlier) leave their children unrouted.
+
+Because summary children bypass the routing and a parked query keeps the
+route it was spawned with, the proxy's view of a bridge conversation can lag
+its next turn, so compaction of a claude-bridge session stays with pi and the
+bridge even when `BILI_NON_HTTP_PROVIDERS` opts the provider in.
 
 ### Subagents (pi-subagents) — native install coverage (#2185)
 

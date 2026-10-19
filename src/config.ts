@@ -1377,28 +1377,34 @@ function warnCcrPluginDivergences(routes: ProviderRoutes, globalCompress?: Compr
 // in kernel/src/protected.ts), so MCP-prefixed compress/acp_rule calls were
 // foldable by T1/T2/T3 compression while their bare-name twins were not.
 // Route the MCP forms through the kernel's host-side isToolProtected hook;
-// identity is the strict mcp__bili__ prefix (same convention as
-// session-self-heal's isBiliToolName), never a suffix match on arbitrary
-// server names.
-const MCP_BILI_TOOL_PREFIX = "mcp__bili__";
+// identity is an exact server prefix (same convention as session-self-heal's
+// isBiliToolName), never a suffix match on arbitrary server names.
+// #3429: pi-claude-bridge hands pi's own tools to its Claude Code child
+// through the fixed MCP server "custom-tools" (MCP_SERVER_NAME in the
+// bridge's src/skills.ts), so mcp__custom-tools__<name> IS pi's tool <name>
+// — bili's compress/acp_rule in a bili-routed pi session.
+const MCP_BILI_TOOL_PREFIXES = ["mcp__bili__", "mcp__custom-tools__"];
 // Mirrors the kernel's ALWAYS_PROTECTED_TOOLS (compress, acp_rule) — the
 // constant is not part of the kernel public API. Keep in lockstep with
 // kernel/src/protected.ts.
 const MCP_HARD_PROTECTED_BARE_NAMES = ["compress", "acp_rule"];
 
+function mcpBiliBareName(toolName: string): string | undefined {
+    const prefix = MCP_BILI_TOOL_PREFIXES.find((p) => toolName.startsWith(p));
+    return prefix === undefined ? undefined : toolName.slice(prefix.length);
+}
+
 export function isMcpBiliHardProtected(toolName: string): boolean {
-    return toolName.startsWith(MCP_BILI_TOOL_PREFIX) &&
-        MCP_HARD_PROTECTED_BARE_NAMES.includes(toolName.slice(MCP_BILI_TOOL_PREFIX.length));
+    const bare = mcpBiliBareName(toolName);
+    return bare !== undefined && MCP_HARD_PROTECTED_BARE_NAMES.includes(bare);
 }
 
 // Consumed-call lifecycle recognition for the kernel's hideConsumedCompressCalls
-// (#2970): the canonical bare form plus the MCP dialect form only. Unlike
+// (#2970): the canonical bare form plus the MCP dialect forms only. Unlike
 // isMcpBiliHardProtected this must NOT match acp_rule — it decides which tool
 // calls count as `compress` for inactive cleanup + live-range arg reduction.
 export function isMcpBiliCompress(toolName: string): boolean {
-    return toolName === "compress" ||
-        (toolName.startsWith(MCP_BILI_TOOL_PREFIX) &&
-            toolName.slice(MCP_BILI_TOOL_PREFIX.length) === "compress");
+    return toolName === "compress" || mcpBiliBareName(toolName) === "compress";
 }
 
 export function loadOptions(env: NodeJS.ProcessEnv = process.env): ProxyOptions {
