@@ -19,6 +19,7 @@ import {
     CHILD_ENV_CHANNEL,
     childReachableOrigin,
     claudeBridgeChildEnvListener,
+    firstPartyUpstream,
     headerSafeId,
     isClaudeBridgeModel,
     mergedCustomHeaders,
@@ -68,6 +69,18 @@ test("routedBaseUrl wraps the default or the user's relay, keeps a same-proxy ro
     assert.equal(routedBaseUrl(origin, "https://relay.example.com/bili/notes"), `${origin}/bili/https://relay.example.com/bili/notes`, "a plain /bili/ path segment is not a bili route");
     assert.equal(routedBaseUrl(origin, "http://localhost:18790/bili/https://api.anthropic.com"), "http://localhost:18790/bili/https://api.anthropic.com", "a loopback alias of the same listener is the same proxy");
     assert.equal(routedBaseUrl(origin, "http://localhost:8787/bili/https://api.anthropic.com"), undefined, "a different port is a different proxy");
+});
+
+test("firstPartyUpstream recognizes only an Anthropic-wire route to api.anthropic.com", () => {
+    assert.equal(firstPartyUpstream("http://127.0.0.1:18790/bili/https://api.anthropic.com"), true);
+    assert.equal(firstPartyUpstream("http://127.0.0.1:18790/bili/anthropic/https://api.anthropic.com/v1"), true);
+    assert.equal(firstPartyUpstream("http://127.0.0.1:18790/bili/https://API.Anthropic.com"), true);
+    assert.equal(firstPartyUpstream("http://127.0.0.1:18790/bili/https://relay.example.com/anthropic"), false, "a user relay is not first-party");
+    assert.equal(firstPartyUpstream("http://127.0.0.1:18790/bili/https://relay.example.com/api.anthropic.com"), false, "the host decides, not the path");
+    assert.equal(firstPartyUpstream("http://127.0.0.1:18790/bili/https://api.anthropic.com.evil.example"), false);
+    assert.equal(firstPartyUpstream("http://127.0.0.1:18790/bili/https://api.anthropic.com:8443"), false, "a non-default port is another endpoint");
+    assert.equal(firstPartyUpstream("http://127.0.0.1:18790/bili/openai/https://api.anthropic.com"), false, "another wire is not Claude Code's");
+    assert.equal(firstPartyUpstream("https://api.anthropic.com"), false, "an unrouted base is not this function's concern");
 });
 
 test("mergedCustomHeaders replaces only the owned plugin headers, case-insensitively", () => {
@@ -215,8 +228,11 @@ test("routedChildEnv returns a routed copy and refuses a foreign proxy route", (
         PATH: "/bin",
         ANTHROPIC_BASE_URL: "http://127.0.0.1:1/bili/https://api.anthropic.com",
         ANTHROPIC_CUSTOM_HEADERS: "X-Team: core\nx-bili-plugin: pi\nx-bili-plugin-conversation: s",
+        _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1",
     });
     assert.deepEqual(env, { PATH: "/bin", ANTHROPIC_CUSTOM_HEADERS: "X-Team: core" }, "the input is never mutated");
+    assert.equal(routedChildEnv({ ANTHROPIC_BASE_URL: "https://relay.example.com" }, "http://127.0.0.1:1", h)?._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL, undefined, "a relay upstream is not marked first-party");
+    assert.equal(routedChildEnv({ _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "0" }, "http://127.0.0.1:1", h)?._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL, "0", "a user value is kept");
     assert.equal(routedChildEnv({ ANTHROPIC_BASE_URL: "http://127.0.0.1:9/bili/https://api.anthropic.com" }, "http://127.0.0.1:1", h), undefined);
 });
 
