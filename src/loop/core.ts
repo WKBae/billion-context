@@ -40,7 +40,7 @@ import { bodyDumpEnabled as knobBodyDumpEnabled, imageRescaleMaxDim } from "../k
 import { dumpsDir } from "../paths.js";
 import { isStrictReasoningEcho, modelIdOf, normalizeStrictEchoBody } from "../strict-echo.js";
 import { log as loggerLog } from "../logger.js";
-import { promptInputTotal, type WireProtocol } from "../util.js";
+import { insertBeforeSystemTail, promptInputTotal, type WireProtocol } from "../util.js";
 import { DEGENERATE_RETRY_NUDGE } from "../degenerate-retry.js";
 import { endsWithDraftClose, lastUserSummaryInstruction, requestExpectsProseSummary } from "../degenerate-turn.js";
 import { safePrefix, safeSuffix, scrubLoneSurrogatesOnWire } from "../text-safe.js";
@@ -672,7 +672,10 @@ export async function* runCompressLoop(
             const body = await buildThreadBody(extra);
             if (body !== undefined) return body;
         }
-        return withStrictEchoRepair(adapter.buildRequest(await rescaleForEncode([...coreMessages, ...extra]), systemPrompt, requestBody));
+        // Round 1 still ends with the client's own messages, which on the
+        // anthropic wire may close with a system run that must stay last.
+        const messages = ctx.protocol === "anthropic" ? insertBeforeSystemTail(coreMessages, extra) : [...coreMessages, ...extra];
+        return withStrictEchoRepair(adapter.buildRequest(await rescaleForEncode(messages), systemPrompt, requestBody));
     };
     // The blind truncation retry re-sends roundBody byte-identical — on a
     // threads turn that re-continues the body's target. Allowed only while

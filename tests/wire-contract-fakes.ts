@@ -73,6 +73,14 @@ export const WIRE_RULES: readonly WireRule[] = [
             'live probe 2026-10-15: :streamRawPredict with "stream": true against the real endpoint answered 429 with an array-wrapped {"error":{"code":429,…,"status":"RESOURCE_EXHAUSTED"}}, the same request on :rawPredict answered the bare object. The fake reproduces the split so an error-path regression fails in CI rather than in production.',
     },
     {
+        id: "WC-023",
+        wire: "anthropic",
+        summary:
+            'a mid-conversation role:"system" message in messages[] cannot be the first entry and must be either the last entry or followed by an assistant turn — a user turn after it is a 400; a proxy that adds user turns to a request whose messages end in a system run must insert them BEFORE that run',
+        provenance:
+            'Anthropic docs "Mid-conversation system messages" placement rules (platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages; the Amazon Bedrock mirror lists them verbatim): violations return 400 invalid_request_error. Learned 2026-10-22 from a Claude Code session through bili: Claude Code closes messages[] with a per-request role:"system" note (<total_tokens>), bili appended its nudge as a user turn after it (… tool_result → system → nudge) and the upstream rejected the request. Repair: insertBeforeSystemTail (src/util.ts) puts every proxy-added user turn in front of the trailing system run — prepare-anthropic nudge/sysNotes/retrieval injection/retrieval note/decide side call, the compress-loop rebuild (src/loop/core.ts extras, src/loop/adapter-anthropic.ts notes) and appendTrailingUserText (src/wire-body.ts). Boundary: the opt-in chain-checkpoint carrier (src/chain-checkpoint.ts, frozen identification contract #1397) still appends after the run.',
+    },
+    {
         id: "WC-022",
         wire: "anthropic",
         summary:
@@ -257,10 +265,25 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
     return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** WC-001..WC-003, WC-007, WC-010, WC-016, WC-022 on an Anthropic /v1/messages body. Returns violation strings. */
+/** WC-001..WC-003, WC-007, WC-010, WC-016, WC-022, WC-023 on an Anthropic /v1/messages body. Returns violation strings. */
 function validateAnthropicBody(body: unknown): string[] {
     const out: string[] = [];
     if (!isPlainObject(body)) return out;
+    if (Array.isArray(body.messages)) {
+        const msgs: unknown[] = body.messages;
+        msgs.forEach((m, i) => {
+            if (!isPlainObject(m) || m.role !== "system") return;
+            if (i === 0) {
+                out.push('WC-023 messages[0]: a role:"system" message cannot be the first entry');
+                return;
+            }
+            let j = i + 1;
+            while (j < msgs.length && isPlainObject(msgs[j]) && (msgs[j] as Record<string, unknown>).role === "system") j++;
+            const next = msgs[j];
+            if (j < msgs.length && !(isPlainObject(next) && next.role === "assistant"))
+                out.push(`WC-023 messages[${i}]: a role:"system" message must be the last entry or be followed by an assistant turn`);
+        });
+    }
     if (Array.isArray(body.messages))
         body.messages.forEach((m, i) => {
             if (!isPlainObject(m) || m.role === "system" || !Array.isArray(m.content)) return;

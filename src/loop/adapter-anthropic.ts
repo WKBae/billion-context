@@ -1,6 +1,6 @@
 import type { CoreMessage } from "acp-kernel";
 import { coreToAnthropic, type AnthropicRequestBody } from "acp-kernel/wire";
-import { appendSystemText } from "../util.js";
+import { appendSystemText, insertBeforeSystemTail } from "../util.js";
 import { stampAnthropicSystemCacheControl } from "./cache-control.js";
 import { buildVisibilityMarker } from "./core.js";
 import { composeStreamFilters, createBiliArtifactFilter, createMarkerLineFilter, createTagEchoFilter } from "./tag-echo-filter.js";
@@ -284,7 +284,7 @@ export function createAnthropicAdapter(requestBody: Record<string, unknown>, ori
             const system = originalSystem !== undefined ? appendSystemText(systemPrompt, originalSystem) : systemPrompt;
             const stamped = cacheMarks ? stampAnthropicSystemCacheControl(system) : system;
             const withNotes = notes && notes.length > 0
-                ? [...messages, ...notes.map((text) => ({ role: "user" as const, content: text }))]
+                ? insertBeforeSystemTail(messages, notes.map((text) => ({ role: "user" as const, content: text })))
                 : messages;
             return { ...body, system: stamped, messages: withNotes };
         },
