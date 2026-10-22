@@ -17,10 +17,9 @@ import { handle } from "./server/handle.js";
 import { withFetchTransport } from "./fetch-transport.js";
 import type { FetchOptions } from "./fetch-util.js";
 import { log as loggerLog } from "./logger.js";
+import { INLINE_ORIGIN } from "./inline-origin.js";
 
-/** Pseudo-origin of the inline lane. Never DNS-resolved: any request reaching
- *  this host is served in-process by installInlineTransport before egress. */
-export const INLINE_ORIGIN = "http://billion-context.inline";
+export { INLINE_ORIGIN };
 const INLINE_HOSTNAME = new URL(INLINE_ORIGIN).hostname;
 
 type FetchInput = string | URL | Request;

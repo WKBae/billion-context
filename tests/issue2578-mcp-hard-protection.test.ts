@@ -32,6 +32,27 @@ test("isMcpBiliHardProtected recognizes exactly the MCP forms of the kernel hard
     assert.equal(isMcpBiliHardProtected("mcp__bili__"), false);
 });
 
+// #3429: pi-claude-bridge exposes pi's tools to its Claude Code child through
+// the MCP server "custom-tools" (the bridge's MCP_SERVER_NAME).
+test("isMcpBiliHardProtected recognizes pi-claude-bridge's custom-tools dialect exactly", () => {
+    assert.equal(isMcpBiliHardProtected("mcp__custom-tools__acp_rule"), true);
+    assert.equal(isMcpBiliHardProtected("mcp__custom-tools__compress"), true);
+    assert.equal(isMcpBiliHardProtected("mcp__custom-tools__decompress"), false);
+    assert.equal(isMcpBiliHardProtected("mcp__custom-tools__read"), false);
+    for (const near of [
+        "mcp__custom-tool__acp_rule",
+        "mcp__custom_tools__acp_rule",
+        "mcp__custom-tools_acp_rule",
+        "mcp__my-custom-tools__acp_rule",
+        "mcp__custom-tools__acp_rules",
+        "mcp__custom-tools__mcp__bili__acp_rule",
+        "mcp__custom-tools__",
+        "custom-tools__acp_rule",
+    ]) {
+        assert.equal(isMcpBiliHardProtected(near), false, near);
+    }
+});
+
 // --- Config plumbing --------------------------------------------------------
 
 test("loadOptions wires the MCP hard-protection hook into kernelConfig", () => {
@@ -50,14 +71,14 @@ test("resolveRequestConfig cascade keeps the hook on tuned configs", () => {
 
 // --- Kernel end-to-end: MCP-named pairs survive compression -----------------
 
-function buildBody(): AnthropicRequestBody {
+function buildBody(ruleTool = "mcp__bili__acp_rule"): AnthropicRequestBody {
     const body: AnthropicRequestBody = { model: "kimi-test", messages: [] };
     const push = (role: "user" | "assistant", content: unknown): void => {
         body.messages.push({ role, content: content as never });
     };
     push("user", "message 0 start of a long working session");
     push("assistant", [
-        { type: "tool_use", id: "rule-1", name: "mcp__bili__acp_rule", input: { action: "add", rule: "always reply concisely" } },
+        { type: "tool_use", id: "rule-1", name: ruleTool, input: { action: "add", rule: "always reply concisely" } },
     ]);
     push("user", [
         { type: "tool_result", tool_use_id: "rule-1", content: `rule stored ${"y".repeat(400)}` },
@@ -68,9 +89,39 @@ function buildBody(): AnthropicRequestBody {
     return body;
 }
 
-function mcpRuleCalls(view: CoreMessage[]): CoreMessage[] {
-    return view.filter((m) => m.contentType === "tool-call" && m.toolName === "mcp__bili__acp_rule");
+function mcpRuleCalls(view: CoreMessage[], ruleTool = "mcp__bili__acp_rule"): CoreMessage[] {
+    return view.filter((m) => m.contentType === "tool-call" && m.toolName === ruleTool);
 }
+
+function foldEarlyHistory(ruleTool: string): { callRef: string | null; covered: boolean; survivors: number } {
+    const core = createCore();
+    const config = { ...loadOptions({}).kernelConfig, preserveRecentMessages: 0, preserveRecentTokens: 0 };
+    const { msgs } = anthropicToCore(buildBody(ruleTool));
+    const turn = core.processTurn({ messages: msgs, state: createInitialState(), config, tokenCount: 9999, renderTags: "text-only" });
+    const refOf = (m: CoreMessage): string | null => refForRaw(turn.state.messageRefs, m.id);
+    const call = msgs.find((m) => m.contentType === "tool-call" && m.toolCallId === "rule-1")!;
+    const spanEnd = msgs.find((m) => m.contentType === "text" && m.text?.startsWith("tail message 20"))!;
+    const res = core.applyCompression({
+        ranges: [{ startRef: "m00001", endRef: refOf(spanEnd)!, summary: "fold the whole early history including the rule call".repeat(3) }],
+        state: turn.state,
+        config,
+        messages: turn.messages,
+    });
+    assert.equal(res.result.errors.length, 0, `no errors: ${res.result.errors.join("; ")}`);
+    const turn2 = core.processTurn({ messages: msgs, state: res.state, config, tokenCount: 9999, renderTags: "text-only" });
+    return { callRef: refOf(call), covered: coveredMessageIds(res.state).has(call.id), survivors: mcpRuleCalls(turn2.messages, ruleTool).length };
+}
+
+test("#3429: the bridge's mcp__custom-tools__acp_rule pair is BLOCKED and survives a fold", () => {
+    assert.deepEqual(foldEarlyHistory("mcp__custom-tools__acp_rule"), { callRef: "BLOCKED", covered: false, survivors: 1 });
+});
+
+test("#3429: a near-miss server's acp_rule stays foldable", () => {
+    const r = foldEarlyHistory("mcp__custom-tool__acp_rule");
+    assert.match(r.callRef ?? "", /^m\d+$/);
+    assert.equal(r.covered, true);
+    assert.equal(r.survivors, 0);
+});
 
 test("MCP acp_rule pair is BLOCKED and survives an explicit full-history fold", () => {
     const core = createCore();

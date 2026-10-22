@@ -31,6 +31,7 @@ billion-context/
 │   ├── knobs.ts                  # Single knob resolver: env > config file > default (#2030)
 │   ├── config.ts                 # Config file (billion-context.json) + providers table + loadOptions
 │   ├── instance.ts               # Live-instance registry record in the proxy-origin file (#394/#403/#417)
+│   ├── inline-origin.ts          # Inline-lane pseudo-origin constant, importable without the inline engine (#3278/#3429)
 │   ├── port-owner.ts             # Post-bind port-ownership verification + pointer-clobber guard (#2941)
 │   ├── paths.ts                  # XDG paths (config/cache/state) + relocation env vars
 │   ├── logger.ts                 # Tee logger: state-dir file + stderr
@@ -158,6 +159,7 @@ billion-context/
 │   │   ├── pi-subagents.ts       #   Inlined acp_delegate sub-agent surface (markEmbedded wiring, #2186)
 │   │   ├── pi-host-stub.ts     #   esbuild alias stub for @earendil-works/pi-coding-agent (→ ".pi" fallback, #2186)
 │   │   ├── pi-native.ts          #   pi native bootstrap gate
+│   │   ├── claude-bridge-routing.ts #  pi-claude-bridge per-child env listener: ANTHROPIC_BASE_URL + plugin headers (#3429)
 │   │   ├── omp.ts                #   omp plugin = createBiliPlugin("omp") re-export of pi factory
 │   │   ├── omp-native.ts         #   omp native bootstrap gate
 │   │   ├── dsh-native.ts         #   dsh native bootstrap gate (+ persona fingerprint, #1916)

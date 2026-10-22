@@ -45,6 +45,7 @@ export const LIVE_FILES = [
     "tests/win-cmd-argv.test.ts",
     "tests/zcode-mcp-degraded.test.ts",
     "tests/zcode-real-cli.test.ts",
+    "tests/issue3429-claude-bridge-routing.test.ts",
 ];
 
 /** Band width per live file: the zone ladder drifts +1 per EADDRINUSE retry;

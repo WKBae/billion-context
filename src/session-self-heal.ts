@@ -129,10 +129,13 @@ export function reductionKeyOf(session: Session): string {
 }
 
 /** A bili-owned tool name as it can appear on the wire: the proxy-injected
- * bare ACP names (compress/…, also used by pi/omp extensions) or the
- * MCP-prefixed form (mcp__bili__compress, zcode/claude-code lanes). */
+ * bare ACP names (compress/…, also used by pi/omp extensions), the
+ * MCP-prefixed form (mcp__bili__compress, zcode/claude-code lanes), or a
+ * bare ACP name under pi-claude-bridge's "custom-tools" server, which carries
+ * every pi tool (#3429). */
 function isBiliToolName(name: string): boolean {
-    return name.startsWith("mcp__bili__") || PROXY_TOOL_NAMES.has(name);
+    if (name.startsWith("mcp__bili__") || PROXY_TOOL_NAMES.has(name)) return true;
+    return name.startsWith("mcp__custom-tools__") && PROXY_TOOL_NAMES.has(name.slice("mcp__custom-tools__".length));
 }
 
 export function countBiliToolUses(messages: CoreMessage[]): number {

@@ -585,11 +585,21 @@ test("#1392: non-http(s) provider rides bili only when opted in AND carried", as
 
         // (C) Opted-in AND routed: the proxy confirms it carries this conversation → the
         // cancel now correctly fires (the whole point of the opt-in).
+        const opaqueCtx = { ...bridgeCtx, model: { contextWindow: 1000000, baseUrl: "opaque-transport", provider: "opaque" } };
+        await withEnv({ BILLION_CONTEXT_PROXY: knownProxy.origin, BILI_NON_HTTP_PROVIDERS: "opaque" }, async () => {
+            const pi = makeFakePi();
+            createBiliPlugin("pi")(pi as never);
+            const handler = pi.events.get("session_before_compact")!;
+            assert.deepEqual(await handler({ reason: "threshold" }, opaqueCtx), { cancel: true }, "opted-in + proxy confirms carriage → compaction ownership claimed");
+        });
+        // (C') #3429: claude-bridge is the exception — its summary and parked children
+        // never carry the current route, so pi/bridge compaction keeps owning it even
+        // when opted in and carried.
         await withEnv({ BILLION_CONTEXT_PROXY: knownProxy.origin, BILI_NON_HTTP_PROVIDERS: "claude-bridge" }, async () => {
             const pi = makeFakePi();
             createBiliPlugin("pi")(pi as never);
             const handler = pi.events.get("session_before_compact")!;
-            assert.deepEqual(await handler({ reason: "threshold" }, bridgeCtx), { cancel: true }, "opted-in + proxy confirms carriage → compaction ownership claimed");
+            assert.equal(await handler({ reason: "threshold" }, bridgeCtx), undefined, "claude-bridge keeps native compaction even when opted in and carried");
         });
 
         // (D) Mismatched allowlist id: opting in a DIFFERENT provider does not lift the veto
