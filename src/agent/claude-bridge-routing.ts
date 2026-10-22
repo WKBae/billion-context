@@ -25,6 +25,8 @@ const CLAUDE_BRIDGE_TRANSPORT = "claude-bridge";
 const ANTHROPIC_DEFAULT_UPSTREAM = "https://api.anthropic.com";
 const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
 const CUSTOM_HEADERS_ENV = "ANTHROPIC_CUSTOM_HEADERS";
+const ASSUME_FIRST_PARTY_ENV = "_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL";
+const ANTHROPIC_FIRST_PARTY_HOST = "api.anthropic.com";
 const OWNED_HEADERS = ["x-bili-plugin", "x-bili-plugin-conversation", "x-bili-plugin-context-window", "x-bili-plugin-model"];
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -76,6 +78,20 @@ export function routedBaseUrl(origin: string, userBase: string | undefined): str
     const routedVia = biliRouteKey(base);
     if (routedVia !== undefined) return routedVia === originKey(new URL(origin)) ? base : undefined;
     return `${origin}/bili/${base}`;
+}
+
+/** Whether a routed base forwards to the Anthropic first-party API over the
+ *  Anthropic wire. Claude Code enables first-party-only betas, such as
+ *  cache-diagnosis, from the base URL host; the proxy's loopback origin hides
+ *  that host, so a routed child has to be told. */
+export function firstPartyUpstream(routedBase: string): boolean {
+    const m = /\/bili\/(?:anthropic\/)?(https?:\/\/[^/?#]+)/.exec(routedBase);
+    if (m === null) return false;
+    try {
+        return new URL(m[1]).host === ANTHROPIC_FIRST_PARTY_HOST;
+    } catch {
+        return false;
+    }
 }
 
 function ownedHeaderLine(line: string): boolean {
@@ -130,7 +146,9 @@ type BridgeChildOutcome = "routed" | "foreign-route";
 export function routedChildEnv(env: Record<string, string>, origin: string, h: BridgeRoutingHeaders): Record<string, string> | undefined {
     const base = routedBaseUrl(origin, env[BASE_URL_ENV]);
     if (base === undefined) return undefined;
-    return { ...env, [BASE_URL_ENV]: base, [CUSTOM_HEADERS_ENV]: mergedCustomHeaders(env[CUSTOM_HEADERS_ENV], h) };
+    const routed: Record<string, string> = { ...env, [BASE_URL_ENV]: base, [CUSTOM_HEADERS_ENV]: mergedCustomHeaders(env[CUSTOM_HEADERS_ENV], h) };
+    if (firstPartyUpstream(base)) routed[ASSUME_FIRST_PARTY_ENV] = env[ASSUME_FIRST_PARTY_ENV] ?? "1";
+    return routed;
 }
 
 /** Handler for CHILD_ENV_CHANNEL. `originFor(sessionId)` names the
