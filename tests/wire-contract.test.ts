@@ -94,6 +94,17 @@ test("WC-022 tool_addition/tool_removal blocks are only valid inside role:system
     })[0], /WC-022/);
 });
 
+test("WC-023 a mid-conversation system message must be last or followed by an assistant turn", () => {
+    assert.deepEqual(VALIDATORS.anthropic({ messages: [{ role: "user", content: "u" }, { role: "system", content: "s" }] }), []);
+    assert.deepEqual(VALIDATORS.anthropic({
+        messages: [{ role: "user", content: "u" }, { role: "system", content: "s" }, { role: "assistant", content: "a" }, { role: "user", content: "u2" }],
+    }), []);
+    assert.match(VALIDATORS.anthropic({
+        messages: [{ role: "user", content: "u" }, { role: "system", content: "s" }, { role: "user", content: "nudge" }],
+    })[0], /WC-023 messages\[1\]/);
+    assert.match(VALIDATORS.anthropic({ messages: [{ role: "system", content: "s" }, { role: "assistant", content: "a" }] })[0], /WC-023 messages\[0\]/);
+});
+
 test("WC-016 validates global-scope breakpoint ordering (render order: tools → system → messages)", () => {
     // #2648 shape: unmarked tools render ahead of a global system block.
     assert.match(VALIDATORS.anthropic({
@@ -186,6 +197,8 @@ test("wire-contract ledger: every rule has a live enforcement clause", () => {
             },
             // WC-022: a pi mid-conversation system message re-emitted as user.
             { messages: [{ role: "user", content: [{ type: "tool_removal", tool_name: "t" }] }] },
+            // WC-023: a user turn appended after the client's trailing system message.
+            { messages: [{ role: "user", content: "u" }, { role: "system", content: "s" }, { role: "user", content: "nudge" }] },
         ],
         "openai-chat": [
             { model: "gemini-synthetic", tools: [{ type: "function", function: { name: "compress", parameters: { type: "object", properties: { content: { type: ["array", "string"] } } } } }] },

@@ -37,7 +37,6 @@ type AnthropicCacheMarks = Map<string, { type: "ephemeral" }>;
 
 export function computeAnthropicMessageMarks(
     processed: { id?: string }[],
-    ephemeralTailCount: number,
     session: { metadata: Record<string, unknown> },
 ): AnthropicCacheMarks {
     const marks = new Map<string, { type: "ephemeral" }>();
@@ -45,15 +44,14 @@ export function computeAnthropicMessageMarks(
         session.metadata["anthropicCacheMarkIds"] = [];
         return marks;
     }
-    if (processed.length === 0 || processed.length <= ephemeralTailCount) {
+    if (processed.length === 0) {
         session.metadata["anthropicCacheMarkIds"] = [];
         return marks;
     }
     const liveIds = new Set(processed.map((m) => m.id).filter((id): id is string => typeof id === "string" && id.length > 0));
     // Retire marks whose messages folded away; keep the survivors' order.
     const kept = ((session.metadata["anthropicCacheMarkIds"] as string[] | undefined) ?? []).filter((id) => liveIds.has(id));
-    const lastIndex = processed.length - 1 - ephemeralTailCount;
-    const currentId = processed[lastIndex]?.id;
+    const currentId = processed[processed.length - 1]?.id;
     if (typeof currentId === "string" && currentId.length > 0 && !kept.includes(currentId) && kept.length < MESSAGE_MARK_CAP) {
         kept.push(currentId);
     }

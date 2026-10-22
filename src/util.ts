@@ -517,6 +517,25 @@ export function systemToUser<T extends { role: string }>(messages: T[], should?:
     );
 }
 
+/** Anthropic accepts a mid-conversation role:"system" message only as the last
+ *  entry or directly before an assistant turn. Index where the trailing run of
+ *  system messages starts (messages.length when there is none). */
+export function systemTailStart(messages: readonly unknown[]): number {
+    let i = messages.length;
+    while (i > 0) {
+        const m = messages[i - 1];
+        if (typeof m !== "object" || m === null || (m as { role?: unknown }).role !== "system") break;
+        i--;
+    }
+    return i;
+}
+
+/** Places proxy-added user turns in front of the client's trailing system run
+ *  (see systemTailStart); a plain append when there is no such run. */
+export function insertBeforeSystemTail<T>(messages: readonly T[], added: readonly T[]): T[] {
+    const i = systemTailStart(messages);
+    return [...messages.slice(0, i), ...added, ...messages.slice(i)];
+}
 
 /** #719: Some OpenAI-compatible backends (DeepSeek) reject assistant messages
  * whose `content` is null — they require a string content (possibly "") or

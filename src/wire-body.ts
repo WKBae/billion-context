@@ -1,4 +1,4 @@
-import type { WireProtocol } from "./util.js";
+import { systemTailStart, type WireProtocol } from "./util.js";
 import { normalizeGoogleUserPartOrder, type GooglePart } from "acp-kernel/wire";
 
 /** Append `text` as a trailing user turn on the wire's own request body.
@@ -56,14 +56,16 @@ export function appendTrailingUserText(protocol: WireProtocol, body: string | Bu
     const messages = obj.messages;
     if (!Array.isArray(messages)) return null;
     const arr = messages as Record<string, unknown>[];
-    const last = arr[arr.length - 1];
+    // A trailing anthropic system run must stay last (systemTailStart).
+    const end = protocol === "anthropic" ? systemTailStart(arr) : arr.length;
+    const last = arr[end - 1];
     if (last && typeof last === "object" && last.role === "user") {
         const c = last.content;
         if (typeof c === "string") last.content = `${c}\n\n${text}`;
         else if (Array.isArray(c)) last.content = [...c, { type: "text", text }];
         else last.content = text;
     } else {
-        arr.push({ role: "user", content: text });
+        arr.splice(end, 0, { role: "user", content: text });
     }
     return JSON.stringify(obj);
 }
