@@ -433,7 +433,41 @@ export function coreToAnthropic(
     }
   }
   flush();
+  return placeSystemMessages(out);
+}
+
+// Anthropic accepts a mid-conversation role:"system" message only as the last
+// entry or directly before an assistant turn; the directive-only form
+// (content: [] carrying output_config) is accepted anywhere. Control-plane
+// system messages (tool_addition deltas) are never folded, but the assistant
+// turn after one can be, which leaves it in front of a user turn. Such a
+// message moves forward to just before the next assistant turn, or to the
+// end when none follows. Valid input comes back unchanged.
+function placeSystemMessages(
+  messages: AnthropicWireMessage[],
+): AnthropicWireMessage[] {
+  const out: AnthropicWireMessage[] = [];
+  let held: AnthropicWireMessage[] = [];
+  for (const m of messages) {
+    if (m.role === "system") {
+      held.push(m);
+      continue;
+    }
+    if (m.role === "user") {
+      out.push(...held.filter(isDirectiveOnlySystemMessage));
+      held = held.filter((h) => !isDirectiveOnlySystemMessage(h));
+      out.push(m);
+      continue;
+    }
+    out.push(...held, m);
+    held = [];
+  }
+  out.push(...held);
   return out;
+}
+
+function isDirectiveOnlySystemMessage(m: AnthropicWireMessage): boolean {
+  return Array.isArray(m.content) && m.content.length === 0;
 }
 
 /** Extract the conversation dimension for Anthropic: a client-provided

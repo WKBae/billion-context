@@ -105,16 +105,51 @@ test("one core per system wire message, role system, wireIndex kept", () => {
   assert.match(systems[1]!.text as string, /\[tool_addition\]$/);
 });
 
-test("system message between two user turns does not merge them", () => {
-  const body = {
-    messages: [
-      { role: "user", content: [{ type: "text", text: "a" }] },
-      TOOLS_DELTA,
-      { role: "user", content: [{ type: "text", text: "b" }] },
-    ],
+test("system message between two user turns moves after them without merging them", () => {
+  const a = { role: "user", content: [{ type: "text", text: "a" }] };
+  const b = { role: "user", content: [{ type: "text", text: "b" }] };
+  const rebuilt = coreToAnthropic(
+    anthropicToCore({ messages: [a, TOOLS_DELTA, b] } as never).msgs as never,
+  );
+  assert.deepEqual(rebuilt, [a, b, TOOLS_DELTA]);
+});
+
+// A fold that covers the assistant turn after an unfoldable system message
+// leaves it in front of the summary's user turn (upstream 400: "messages.1:
+// role 'system' must precede an 'assistant' message or end the array").
+test("system message stranded by a fold moves to just before the next assistant turn", () => {
+  const first = { role: "user", content: [{ type: "text", text: "first" }] };
+  const next = { role: "user", content: [{ type: "text", text: "next" }] };
+  const reply = { role: "assistant", content: [{ type: "text", text: "reply" }] };
+  const msgs = anthropicToCore({
+    messages: [first, TOOLS_DELTA, EFFORT, next, reply],
+  } as never).msgs;
+  const summary = {
+    id: "s1",
+    role: "system",
+    contentType: "text",
+    text: "[Compressed conversation section] x",
   };
-  const rebuilt = coreToAnthropic(anthropicToCore(body as never).msgs as never);
-  assert.deepEqual(rebuilt, body.messages);
+  const rebuilt = coreToAnthropic([
+    msgs[0]!,
+    msgs[1]!,
+    msgs[2]!,
+    summary,
+    ...msgs.slice(3),
+  ] as never);
+  assert.deepEqual(rebuilt, [
+    first,
+    EFFORT,
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "[Compressed conversation section] x" },
+        { type: "text", text: "next" },
+      ],
+    },
+    TOOLS_DELTA,
+    reply,
+  ]);
 });
 
 test("string-content system message round-trips", () => {
