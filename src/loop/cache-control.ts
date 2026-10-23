@@ -60,6 +60,39 @@ export function computeAnthropicMessageMarks(
     return marks;
 }
 
+type MarkCarrier = { id?: string; contentType?: string; rawAnthropicBlock?: unknown; rawAnthropicMessage?: unknown };
+
+/** A client breakpoint on a message prune removed moves to the nearest earlier
+ *  surviving message that can carry it. Claude Code marks only its trailing
+ *  system note, and a fresh note can repeat the content-derived id of an older
+ *  note a fold already covered, which left the request without a breakpoint. */
+export function carryPrunedCacheControls(
+    original: MarkCarrier[],
+    view: MarkCarrier[],
+    controls: Map<string, unknown>,
+): Map<string, unknown> {
+    const live = new Set(view.map((m) => m.id));
+    if ([...controls.keys()].every((id) => live.has(id))) return controls;
+    const carried = new Map([...controls].filter(([id]) => live.has(id)));
+    original.forEach((m, index) => {
+        if (m.id === undefined || live.has(m.id) || !controls.has(m.id)) return;
+        for (let j = index - 1; j >= 0; j--) {
+            const target = original[j]!;
+            if (target.id === undefined || !live.has(target.id) || !canCarryMark(target)) continue;
+            if (!carried.has(target.id)) carried.set(target.id, controls.get(m.id));
+            return;
+        }
+    });
+    return carried;
+}
+
+// coreToAnthropic applies a mark by id only to blocks it rebuilds itself;
+// sidecar blocks and verbatim system messages re-emit their original bytes,
+// and thinking blocks cannot carry cache_control.
+function canCarryMark(m: MarkCarrier): boolean {
+    return m.contentType !== "reasoning" && m.rawAnthropicBlock === undefined && m.rawAnthropicMessage === undefined;
+}
+
 /** WC-010: Anthropic's 4-breakpoint budget spans system blocks + tools entries
  *  + message blocks COMBINED; anthropicToCore only harvests messages, so a
  *  tools-only client mark must suppress ours too or the 5th breakpoint 400s. */
