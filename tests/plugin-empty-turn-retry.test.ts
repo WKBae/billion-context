@@ -140,6 +140,53 @@ test("plugin chat does not retry a turn that already delivered visible text", as
     assert.equal(textDeltas(out.join(""), "openai"), "the model answered");
 });
 
+// A model imitating the render tags prefixed to its prompt opens its answer with
+// one: the closed tag and the answer arrive in the same delta. The filter drops
+// the whole tag, interior included, so what the frame releases is the answer.
+for (const [shape, deltas] of [
+    ["one delta", [`${TAG_OPEN}m00041${TAG_CLOSE}\nTEN`]],
+    ["tag, then answer", [`${TAG_OPEN}m00041${TAG_CLOSE}`, "\nTEN"]],
+] as const) {
+    test(`plugin chat does not retry an answer that follows a closed render-tag echo (${shape})`, async () => {
+        const out: string[] = [];
+        let calls = 0;
+        const refetch = () => {
+            calls += 1;
+            return Promise.resolve(streamOf(proseTurn("\nTEN")));
+        };
+        const turn = [chatChunk({ role: "assistant" }), ...deltas.map((content) => chatChunk({ content })), chatStop(), DONE];
+        await pipePluginChatWithStrip(streamOf(turn), makeRes(out), "openai", makeSession(), undefined, refetch);
+        const text = out.join("");
+        assert.equal(calls, 0, "the answer is visible output");
+        assert.equal(textDeltas(text, "openai"), "\nTEN", "the answer reaches the client once");
+        assert.ok(!text.includes("stream error"));
+    });
+
+    test(`plugin chat (anthropic) does not retry an answer that follows a closed render-tag echo (${shape})`, async () => {
+        const out: string[] = [];
+        let calls = 0;
+        const refetch = () => {
+            calls += 1;
+            return Promise.resolve(streamOf(anthropicProseTurn("\nTEN")));
+        };
+        const turn = [
+            sse("message_start", { type: "message_start", message: { id: "msg_1", role: "assistant", usage: { input_tokens: 40 } } }),
+            sse("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+            ...deltas.map((text) =>
+                sse("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }),
+            ),
+            sse("content_block_stop", { type: "content_block_stop", index: 0 }),
+            sse("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } }),
+            sse("message_stop", { type: "message_stop" }),
+        ];
+        await pipePluginChatWithStrip(streamOf(turn), makeRes(out), "anthropic", makeSession(), undefined, refetch);
+        const text = out.join("");
+        assert.equal(calls, 0, "the answer is visible output");
+        assert.equal(textDeltas(text, "anthropic"), "\nTEN", "the answer reaches the client once");
+        assert.ok(!text.includes("stream error"));
+    });
+}
+
 test("plugin chat does not retry a turn that produced a tool call", async () => {
     const out: string[] = [];
     let calls = 0;
