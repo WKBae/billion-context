@@ -101,6 +101,9 @@ const PROXY_VERSION = (() => {
 //      args}, under the session lock, against the same executeProxyTool the
 //      wire-mode compress loop uses.
 
+/** An echoed render tag's close. The filter drops the tag through it, so text
+ *  released in the delta that carries it is the model's own, not the tag's interior. */
+const RENDER_TAG_CLOSE = "</acp>";
 const PLUGIN_AGENT_HEADER = "x-bili-plugin";
 const PLUGIN_CONVERSATION_HEADER = "x-bili-plugin-conversation";
 /** #920: legacy-lane marker. Set by the absorbed opencode-acp wrapper for
@@ -2256,9 +2259,7 @@ export async function pipePluginChatWithStrip(
     // every count taken from bili.log.
     const who = session ? `[${session.id}] ` : "";
     const onTagDrop = (snippet: string) => {
-        // A dropped tag that carries its own close took its interior with it:
-        // what the frame releases after it is the model's text, not leftover markup.
-        if (!/<\/acp>\s*$/.test(snippet)) droppedTagInFrame = true;
+        droppedTagInFrame = true;
         sawStrippedEcho = true;
         loggerLog("warn", `${who}[tag-echo] stripped model-emitted render tag (plugin passthrough): ${snippet.slice(0, 80).replace(/\n/g, " ")}`);
     };
@@ -2794,6 +2795,7 @@ export async function pipePluginChatWithStrip(
                 }
                 const index = typeof ch?.["index"] === "number" ? ch["index"] : ci;
                 const [released, pushedChanged] = pushField(field, index, v);
+                if (v.includes(RENDER_TAG_CLOSE)) droppedTagInFrame = false;
                 let clean = released;
                 let changed = pushedChanged;
                 if (isTerminal) {
@@ -2960,6 +2962,7 @@ export async function pipePluginChatWithStrip(
             return rawEvent + "\n\n";
         }
         const [clean, changed] = pushField(field, index, raw);
+        if (raw.includes(RENDER_TAG_CLOSE)) droppedTagInFrame = false;
         if (!changed) {
             if (field === "text" && raw.length > 0) {
                 visibleTextChars += raw.length;
@@ -3070,6 +3073,7 @@ export async function pipePluginChatWithStrip(
                     continue;
                 }
                 const [released, pushedChanged] = pushField(field, index, raw);
+                if (raw.includes(RENDER_TAG_CLOSE)) droppedTagInFrame = false;
                 let clean = released;
                 let changed = pushedChanged;
                 if (isTerminal) {
