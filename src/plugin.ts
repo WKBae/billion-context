@@ -2256,7 +2256,9 @@ export async function pipePluginChatWithStrip(
     // every count taken from bili.log.
     const who = session ? `[${session.id}] ` : "";
     const onTagDrop = (snippet: string) => {
-        droppedTagInFrame = true;
+        // A dropped tag that carries its own close took its interior with it:
+        // what the frame releases after it is the model's text, not leftover markup.
+        if (!/<\/acp>\s*$/.test(snippet)) droppedTagInFrame = true;
         sawStrippedEcho = true;
         loggerLog("warn", `${who}[tag-echo] stripped model-emitted render tag (plugin passthrough): ${snippet.slice(0, 80).replace(/\n/g, " ")}`);
     };
